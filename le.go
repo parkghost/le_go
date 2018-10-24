@@ -183,20 +183,43 @@ func (logger *Logger) SetPrefix(prefix string) {
 	logger.prefix = prefix
 }
 
+var MaxRetry = 3
+
 // Write writes a bytes array to the Logentries TCP connection,
 // it adds the access token and prefix and also replaces
 // line breaks with the unicode \u2028 character
 func (logger *Logger) Write(p []byte) (n int, err error) {
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
+
 	if err := logger.ensureOpenConnection(); err != nil {
 		return 0, err
 	}
 
-	logger.mu.Lock()
-	defer logger.mu.Unlock()
-
 	logger.makeBuf(p)
 
-	return logger.conn.Write(logger.buf)
+	if n, err = logger.conn.Write(logger.buf); err != nil {
+		var retry = 0
+		var backoff = time.Millisecond * 100
+		for {
+			retry++
+			if retry > MaxRetry {
+				return 0, fmt.Errorf("le_go: write retry over %d times", retry)
+			}
+
+			backoff = backoff * 2
+			time.Sleep(backoff)
+			if connErr := logger.openConnection(); connErr != nil {
+				continue
+			}
+
+			if n, err = logger.conn.Write(logger.buf); err != nil {
+				continue
+			}
+			return
+		}
+	}
+	return
 }
 
 // makeBuf constructs the logger buffer
